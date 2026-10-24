@@ -1,0 +1,18 @@
+QAQ-Revival keyboard helper
+
+The repository originally imported QaqmKeyHelper.exe without its C# project.
+QaqrKeyHelper.exe was a byte-for-byte rename of that executable.
+Original SHA-256: df724b3ba49c0f158d2eca6411739f8ebd405371bd71090e338c02d13b0cd715
+
+Program.cs reconstructs its behavior from the embedded managed assembly's IL:
+f10 / hotkey commands, base64url JSON, virtual-key mapping, validation before
+input, a 25 ms F10 hold, and 4 / 18 / 4 ms combination-key timing.
+This is reconstructed source, not the original project's exact source text.
+It additionally releases held keys in a finally block.
+
+The build uses Windows .NET Framework, like the tray host and Steam bridge,
+instead of bundling a private .NET 8 runtime. No Python or .NET SDK is needed.
+Build both helpers: node build.cjs
+Verify without sending real keyboard input: node build.cjs --test
+Output: build/QaqrKeyHelper.exe (generated, not versioned).
+The QAQR host chooses its own output path and packages resources/QaqrKeyHelper.exe.
