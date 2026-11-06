@@ -25,7 +25,7 @@ function build({ component = 'all', output = path.join(__dirname, 'build'), test
       if (result.error || result.status !== 0) throw result.error || Error(result.stderr || 'Keyboard helper tests failed');
     }
   }
-  if (component !== 'key-helper') compile('QaqrTrayHost.exe', 'winexe', 'tray-host/Program.cs', ['/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll']);
+  if (component !== 'key-helper') compile('QaqrTrayHost.exe', 'winexe', 'tray-host/Program.cs', [path.join(__dirname, 'tray-host/TrayMenu.cs'), '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll']);
   fs.copyFileSync(path.join(__dirname, 'LICENSE'), path.join(output, 'LICENSE'));
   console.log('Built Windows helpers: ' + component);
 }
