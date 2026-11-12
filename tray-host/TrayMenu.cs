@@ -37,12 +37,18 @@ namespace QaqrTrayHost
         }
     }
 
+    // The native twin of the manager's dropdown menu: the same surface, row and icon sizes,
+    // with its translucent colours flattened onto the surface.
     internal sealed class TrayMenu : ContextMenuStrip
     {
-        private Font menuFont;
+        internal Color Surface, Hover, Ink, HoverInk, Glyph, Line, Edge;
         internal float ScaleFactor = 1f;
-        internal bool Dark;
-        internal bool Contrast;
+        // True when Windows draws the rounded frame, its border and its shadow.
+        internal bool Framed;
+        // The gap between the popup's edge and its rows.
+        internal int Inset;
+        private bool contrast;
+        private Font menuFont;
         private readonly ToolStripMenuItem show;
         private readonly ToolStripMenuItem quit;
         private readonly ToolStripSeparator separator = new ToolStripSeparator();
@@ -62,61 +68,90 @@ namespace QaqrTrayHost
             separator.AutoSize = false;
             Items.AddRange(new ToolStripItem[] { show, separator, quit });
             Opening += delegate { Prepare(DisplayScale.At(Cursor.Position)); };
-            Opened += delegate
-            {
-                // Windows 11 rounds the native popup; older Windows keeps the flat border.
-                try { int preference = 2; DwmSetWindowAttribute(Handle, 33, ref preference, sizeof(int)); }
-                catch (DllNotFoundException) { }
-                catch (EntryPointNotFoundException) { }
-            };
+            SetTheme(false, false);
             Prepare(1f);
         }
 
-        internal void SetTheme(bool dark, bool contrast)
+        internal void SetTheme(bool dark, bool highContrast)
         {
-            Dark = dark;
-            Contrast = contrast || SystemInformation.HighContrast;
-            BackColor = Contrast ? SystemColors.Menu : Dark ? Color.FromArgb(36, 36, 41) : Color.FromArgb(250, 250, 252);
-            ForeColor = Contrast ? SystemColors.MenuText : Dark ? Color.FromArgb(240, 240, 244) : Color.FromArgb(36, 36, 42);
+            contrast = highContrast || SystemInformation.HighContrast;
+            if (contrast)
+            {
+                Surface = SystemColors.Menu; Hover = SystemColors.Highlight; Ink = Glyph = Line = SystemColors.MenuText;
+                HoverInk = SystemColors.HighlightText; Edge = SystemColors.WindowFrame;
+            }
+            else if (dark)
+            {
+                Surface = Color.FromArgb(29, 28, 35); Hover = Color.FromArgb(37, 36, 44); Ink = HoverInk = Color.FromArgb(241, 240, 245);
+                Glyph = Color.FromArgb(176, 174, 187); Line = Color.FromArgb(45, 44, 50); Edge = Color.FromArgb(61, 60, 66);
+            }
+            else
+            {
+                Surface = Color.White; Hover = Color.FromArgb(240, 239, 243); Ink = HoverInk = Color.FromArgb(27, 26, 33);
+                Glyph = Color.FromArgb(91, 89, 102); Line = Color.FromArgb(234, 234, 235); Edge = Color.FromArgb(213, 213, 215);
+            }
+            BackColor = Surface;
+            ForeColor = Ink;
+            Frame();
             Invalidate(true);
         }
 
-        internal int Px(float value) { return Math.Max(1, (int)Math.Round(value * ScaleFactor)); }
+        internal int Px(float value) { return Math.Max(1, (int)(value * ScaleFactor + 0.5f)); }
 
-        protected override void OnSizeChanged(EventArgs e)
+        internal int Hairline { get { return Math.Max(1, (int)ScaleFactor); } }
+
+        // The menu layout resets Padding to this default whenever it measures its items.
+        protected override Padding DefaultPadding { get { return new Padding(Inset); } }
+
+        protected override void OnHandleCreated(EventArgs e)
         {
-            base.OnSizeChanged(e);
-            UpdateRegion();
+            base.OnHandleCreated(e);
+            Frame();
         }
 
-        private void UpdateRegion()
+        private void Frame()
         {
-            if (Width < 2 || Height < 2) return;
-            using (var shape = TrayMenuRenderer.Rounded(new Rectangle(0, 0, Width, Height), Px(8)))
+            if (!IsHandleCreated) return;
+            Framed = false;
+            try
             {
-                var previous = Region;
-                Region = new Region(shape);
-                if (previous != null) previous.Dispose();
+                // Windows 11 rounds, outlines and shades the popup itself. Older Windows refuses and keeps a square one.
+                int round = 2, edge = contrast ? -1 : ColorTranslator.ToWin32(Edge);
+                Framed = DwmSetWindowAttribute(Handle, 33, ref round, sizeof(int)) == 0
+                    && DwmSetWindowAttribute(Handle, 34, ref edge, sizeof(int)) == 0;
             }
+            catch (DllNotFoundException) { }
+            catch (EntryPointNotFoundException) { }
         }
 
         internal void Prepare(float scale)
         {
             ScaleFactor = Math.Max(1f, scale);
-            var previous = menuFont;
-            menuFont = new Font(SystemFonts.MessageBoxFont.FontFamily,
-                Math.Max(9f, SystemFonts.MessageBoxFont.SizeInPoints) * 96f / 72f * ScaleFactor, FontStyle.Regular, GraphicsUnit.Pixel);
-            Font = menuFont;
-            if (previous != null) previous.Dispose();
-            int inset = Px(6), row = Math.Max(Px(34), menuFont.Height + Px(14));
-            int textWidth = Math.Max(TextRenderer.MeasureText(show.Text, menuFont).Width, TextRenderer.MeasureText(quit.Text, menuFont).Width);
-            int width = Math.Max(Px(200), textWidth + Px(62));
-            Padding = new Padding(inset);
+            // 13 px matches the manager; a larger system text size enlarges it in step.
+            using (var system = SystemFonts.MessageBoxFont)
+            {
+                float size = 13f * Math.Max(1f, system.SizeInPoints / 9f) * ScaleFactor;
+                // Assigning an equal font keeps the old object, so only a changed one may replace and release it.
+                if (menuFont == null || menuFont.Size != size || menuFont.Name != system.Name)
+                {
+                    var previous = menuFont;
+                    menuFont = new Font(system.Name, size, FontStyle.Regular, GraphicsUnit.Pixel);
+                    Font = menuFont;
+                    if (previous != null) previous.Dispose();
+                }
+            }
+            // Windows draws its border over the outermost pixel.
+            Inset = Px(4) + 1;
+            int row = Math.Max(Px(32), menuFont.Height + Px(12));
+            int label = Math.Max(TextRenderer.MeasureText(show.Text, menuFont).Width, TextRenderer.MeasureText(quit.Text, menuFont).Width);
+            int width = Math.Max(Px(180), Inset * 2 + Px(8 + 16 + 8) + label + Px(16));
+            Padding = new Padding(Inset);
             show.Margin = quit.Margin = separator.Margin = Padding.Empty;
-            show.Size = quit.Size = new Size(width - inset * 2, row);
-            separator.Size = new Size(width - inset * 2, Px(9));
-            Size = new Size(width, row * 2 + separator.Height + inset * 2);
-            UpdateRegion();
+            // The layout honours the vertical padding only: rows start at the left edge and separators pick their own
+            // width, so rows reach from that edge to the right inset and the renderer draws from the inset.
+            show.Size = quit.Size = new Size(width - Inset, row);
+            separator.Size = new Size(width - 4, Px(4) * 2 + Hairline);
+            Size = new Size(width, row * 2 + separator.Height + Inset * 2);
         }
 
         protected override void Dispose(bool disposing)
@@ -128,10 +163,10 @@ namespace QaqrTrayHost
 
     internal sealed class TrayMenuRenderer : ToolStripRenderer
     {
-        internal static GraphicsPath Rounded(Rectangle bounds, int radius)
+        private static GraphicsPath Rounded(RectangleF bounds, float radius)
         {
             var path = new GraphicsPath();
-            int diameter = Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height));
+            float diameter = Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height));
             path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
             path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
             path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
@@ -140,74 +175,81 @@ namespace QaqrTrayHost
             return path;
         }
 
+        // Line icons in the manager's style. Straight strokes sit on whole pixels so they stay sharp at every scale.
+        internal static void DrawGlyph(Graphics graphics, bool quit, Color color, int x, int y, int box, float scale)
+        {
+            int stroke = Math.Max(1, (int)(1.17f * scale + 0.5f));
+            float unit = box / 16f, half = stroke / 2f;
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.PixelOffsetMode = PixelOffsetMode.Half;
+            using (var pen = new Pen(color, stroke) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+            {
+                if (quit)
+                {
+                    float centre = x + (box - stroke) / 2 + half, middle = y + 8.75f * unit, radius = 5.5f * unit;
+                    graphics.DrawArc(pen, centre - radius, middle - radius, radius * 2, radius * 2, -45, 270);
+                    graphics.DrawLine(pen, centre, y + 1.75f * unit, centre, y + 8f * unit);
+                }
+                else
+                {
+                    int side = (int)(2 * unit + 0.5f), top = (int)(2.5f * unit + 0.5f);
+                    var frame = new RectangleF(x + side + half, y + top + half, box - side * 2 - stroke, box - top * 2 - stroke);
+                    using (var shape = Rounded(frame, 1.25f * unit)) graphics.DrawPath(pen, shape);
+                    float bar = frame.Top + (int)(3 * unit + 0.5f);
+                    pen.StartCap = pen.EndCap = LineCap.Flat;
+                    graphics.DrawLine(pen, frame.Left, bar, frame.Right, bar);
+                }
+            }
+        }
+
         protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
         {
-            var menu = (TrayMenu)e.ToolStrip;
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var shape = Rounded(new Rectangle(0, 0, menu.Width - 1, menu.Height - 1), menu.Px(8)))
-            using (var brush = new SolidBrush(menu.BackColor)) e.Graphics.FillPath(brush, shape);
+            using (var brush = new SolidBrush(((TrayMenu)e.ToolStrip).Surface)) e.Graphics.FillRectangle(brush, e.AffectedBounds);
         }
 
         protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
         {
             var menu = (TrayMenu)e.ToolStrip;
-            var color = menu.Contrast ? SystemColors.WindowFrame : menu.Dark ? Color.FromArgb(65, 65, 73) : Color.FromArgb(214, 214, 221);
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var shape = Rounded(new Rectangle(0, 0, menu.Width - 1, menu.Height - 1), menu.Px(8)))
-            using (var pen = new Pen(color)) e.Graphics.DrawPath(pen, shape);
+            if (menu.Framed) return;
+            using (var pen = new Pen(menu.Edge)) e.Graphics.DrawRectangle(pen, 0, 0, menu.Width - 1, menu.Height - 1);
         }
 
-        private static Color TextColor(TrayMenu menu, ToolStripItem item)
+        // The row area between the menu's insets, in the item's own coordinates.
+        private static Rectangle Row(TrayMenu menu, ToolStripItem item)
         {
-            if (menu.Contrast) return item.Selected ? SystemColors.HighlightText : SystemColors.MenuText;
-            if (item.Name == "quit" && item.Selected) return menu.Dark ? Color.FromArgb(255, 150, 158) : Color.FromArgb(184, 40, 58);
-            return menu.ForeColor;
+            return new Rectangle(menu.Inset - item.Bounds.X, 0, menu.Width - menu.Inset * 2, item.Height);
         }
 
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
             var menu = (TrayMenu)e.ToolStrip;
+            var row = Row(menu, e.Item);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
             if (e.Item.Selected)
-            {
-                Color color = menu.Contrast ? SystemColors.Highlight : menu.Dark ? Color.FromArgb(55, 55, 63) : Color.FromArgb(232, 232, 239);
-                if (!menu.Contrast && e.Item.Name == "quit") color = menu.Dark ? Color.FromArgb(65, 39, 47) : Color.FromArgb(253, 233, 237);
-                using (var shape = Rounded(new Rectangle(menu.Px(3), menu.Px(2), e.Item.Width - menu.Px(6), e.Item.Height - menu.Px(4)), menu.Px(5)))
-                using (var brush = new SolidBrush(color)) e.Graphics.FillPath(brush, shape);
-            }
-            var state = e.Graphics.Save();
-            e.Graphics.TranslateTransform(menu.Px(12), (e.Item.Height - menu.Px(16)) / 2f);
-            e.Graphics.ScaleTransform(menu.ScaleFactor, menu.ScaleFactor);
-            using (var pen = new Pen(TextColor(menu, e.Item), 1.35f))
-            {
-                pen.StartCap = pen.EndCap = LineCap.Round;
-                if (e.Item.Name == "quit")
-                {
-                    e.Graphics.DrawArc(pen, 2, 2, 12, 12, -50, 280);
-                    e.Graphics.DrawLine(pen, 8, 1, 8, 7);
-                }
-                else
-                {
-                    e.Graphics.DrawRectangle(pen, 1, 2, 14, 12);
-                    e.Graphics.DrawLine(pen, 1, 6, 15, 6);
-                }
-            }
-            e.Graphics.Restore(state);
+                using (var shape = Rounded(row, menu.Px(4)))
+                using (var brush = new SolidBrush(menu.Hover)) e.Graphics.FillPath(brush, shape);
+            int box = menu.Px(16);
+            DrawGlyph(e.Graphics, e.Item.Name == "quit", e.Item.Selected ? menu.HoverInk : menu.Glyph,
+                row.Left + menu.Px(8), (row.Height - box) / 2, box, menu.ScaleFactor);
         }
 
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
         {
             var menu = (TrayMenu)e.ToolStrip;
-            var bounds = new Rectangle(menu.Px(38), 0, e.Item.Width - menu.Px(46), e.Item.Height);
-            TextRenderer.DrawText(e.Graphics, e.Text, menu.Font, bounds, TextColor(menu, e.Item),
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+            var row = Row(menu, e.Item);
+            int left = menu.Px(8 + 16 + 8);
+            TextRenderer.DrawText(e.Graphics, e.Text, menu.Font, new Rectangle(row.Left + left, 0, row.Width - left - menu.Px(8), row.Height),
+                e.Item.Selected ? menu.HoverInk : menu.Ink,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
         }
 
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
         {
             var menu = (TrayMenu)e.ToolStrip;
-            var color = menu.Contrast ? SystemColors.MenuText : menu.Dark ? Color.FromArgb(63, 63, 70) : Color.FromArgb(222, 222, 229);
-            using (var pen = new Pen(color)) e.Graphics.DrawLine(pen, menu.Px(9), e.Item.Height / 2, e.Item.Width - menu.Px(9), e.Item.Height / 2);
+            var row = Row(menu, e.Item);
+            using (var brush = new SolidBrush(menu.Line))
+                e.Graphics.FillRectangle(brush, row.Left + menu.Px(4), (row.Height - menu.Hairline) / 2, row.Width - menu.Px(8), menu.Hairline);
         }
     }
 }
